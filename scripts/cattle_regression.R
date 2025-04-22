@@ -17,20 +17,18 @@ regression_data = read.csv("data/regression_data.csv")
 
 # run against cattle quantity
 first_stage = lm(production_carcass ~ w_avg, data = regression_data)
-summary(first_stage) # seems strong, correlated w/ carcass production
+summary(first_stage) # gives negative estimate which is weird
 
 # check for fixed effects
-feols(production_carcass ~ w_avg | code_name + year, data = regression_data) # this still gives us a negative estimate which is weird
+feols(production_carcass ~ w_avg | state_code_name + year, data = regression_data) # this gives a positive estimate now which aligns with beliefs
 
 # make a graph
-ggplot(regression_data, aes(x = w_avg, y = production_carcass, color = factor(code_name))) +
+ggplot(regression_data, aes(x = w_avg, y = production_carcass, color = factor(state_code_name))) +
   geom_point(alpha = 0.6) +  # Add points with transparency
   labs(title = "Densities of average SPEI vs Cattle Price by State",
        x = "Weighted Average",
        y = "Carcass Production",
        color = "State") # label
-
-
 
 ### ADDING COMPLEXITY
 
@@ -74,109 +72,59 @@ model_finder = function(starting_order, p_value_threshold, max_polynomial_order)
 
 model_finder(1, 0.05, 10)
 
-## Forward Stepwise Regression
-base <- lm(production_carcass ~ 1, data=regression_data)
-full <- lm(production_carcass ~ . + .^2, data=regression_data)
-fwdAIC <- stepAIC(base, scope = list(lower = base, upper = full), regression_data, direction = "forward", trace = FALSE)
-summary(fwdAIC)
+# do a fixed effects version of the quadratic equation
+feols(production_carcass ~ w_avg + w_avg^2 | state_code_name + year, data = regression_data) 3 # not very good results!
 
-# subsample the variables/interactions from the AIC
-significant_vars <- names(coef(summary(fwdAIC))[, "Pr(>|t|)"][
-  coef(summary(fwdAIC))[, "Pr(>|t|)"] < 0.05
-])
-#significant_vars <- paste0("`", significant_vars, "`")
-#significant_vars <- make.names(significant_vars)
-
-# run the new model
-AIC_form <- as.formula(paste("production_carcass ~", paste(significant_vars, collapse = " + ")))
-AIC_model <- lm(AIC_form, data = regression_data)
-summary(AIC_model)
-
-# use lasso maybe?
-X <- model.matrix(~ poly(w_avg, 3, raw = TRUE), data = regression_data)[, -1]
-y <- regression_data$production_carcass
-
-set.seed(04152025)
-cv_lasso <- cv.glmnet(X, y, alpha = 1) # alpha is the penalty
-best_lambda <- cv_lasso$lambda.min # choosing the best lambda
-lasso_model <- glmnet(X, y, alpha = 1, lambda = best_lambda) # refit lasso
-coef(lasso_model) # check coefficients and which one zero
-
-# make scatter plots and have the regression line in their
-model_6 <- lm(production_carcass ~ poly(w_avg, 6, raw = TRUE), 
-              data = regression_data)
-summary(model_6)
-
-w_grid <- seq(min(regression_data$w_avg, na.rm = TRUE),
-              max(regression_data$w_avg, na.rm = TRUE),
-              length.out = 100)
-
-# predict the fitted values for this grid
-pred_data <- data.frame(w_avg = w_grid)
-pred_data$fit <- predict(model_6, newdata = pred_data)
-
-# plot the data and the fitted curve
-ggplot(regression_data, aes(x = w_avg, y = production_carcass, color = "red")) +
-  geom_point() +
-  geom_line(data = pred_data, aes(x = w_avg, y = fit), color = "black") +
-  labs(
-    x = "w_avg",
-    y = "State Production (Carcass)",
-    title = "Degree-6 Polynomial Fit"
-  )
-
-# how do I tweak this hmmmmmmmm
-
-
-
-
-# how do I construct an instrument???? start with a linear regression I guess
-initial_reg = lm(price_fat ~ w_avg, data = regression_data)
-summary(initial_reg) # seems like weighted spei average is a statistically significant factor in price, aligns with prior beliefs
-# tried for w/ cities and w/o cities and got the same results
-
-# make some graphs showing the relationships based on different vars
-ggplot(regression_data, aes(x = w_avg, y = price_fat, color = year)) +
-  geom_point(alpha = 0.6) +  # Add points with transparency
-  labs(title = "Densities of average SPEI vs Cattle Price by Month",
-       x = "Weighted Average",
-       y = "Price",
-       color = "Year") +  # Label for legend
-  ylim(NA, 200)
-
-# test non-linearities
-
-# use lasso maybe?
-
-# make scatter plots and have the regression line in their
-
-# how do I tweak this hmmmmmmmm
-
-
-### ADDING LAGS
-
-lagged1_regression = regression_data %>%
+# add lags for time
+regression_data_lag1 = regression_data %>%
   mutate(
-    quarter = case_when(
-      quarter == 1 ~ 4,  # Move Q1 to Q4
-      quarter == 2 ~ 1,  # Move Q2 to Q1
-      quarter == 3 ~ 2,  # Move Q3 to Q2
-      quarter == 4 ~ 3   # Move Q4 to Q3
-    ),
-    year = ifelse(quarter == 4 & lag(quarter, default = 4) == 1, year - 1, year)  # Adjust year for Q1 -> Q4 shift
+    year = if_else(quarter == 4, year + 1, year),
+    quarter = if_else(quarter == 4, 1, quarter + 1) # can lag more by repeating this process
   )
 
-# run the first stage
-first_stage1 = lm(production_carcass ~ w_avg, data = lagged1_regression)
-summary(first_stage1)
+# run the lagged regression w/ fixed effects
+feols(production_carcass ~ w_avg | state_code_name + year, data = regression_data_lag1) # now gives negative estimate again
 
-# make tables for multiple lags, can do this manually
+# maybe one more lag?
+regression_data_lag2 = regression_data_lag1 %>%
+  mutate(
+    year = if_else(quarter == 4, year + 1, year),
+    quarter = if_else(quarter == 4, 1, quarter + 1) # can lag more by repeating this process
+  )
+
+feols(production_carcass ~ w_avg | state_code_name + year, data = regression_data_lag2) # even more negative?
+
+# lets do it again for till with reach a year
+regression_data_lag3 = regression_data_lag2 %>%
+  mutate(
+    year = if_else(quarter == 4, year + 1, year),
+    quarter = if_else(quarter == 4, 1, quarter + 1) # can lag more by repeating this process
+  )
+
+feols(production_carcass ~ w_avg | state_code_name + year, data = regression_data_lag3)
+
+regression_data_lag4 = regression_data_lag3 %>%
+  mutate(
+    year = if_else(quarter == 4, year + 1, year),
+    quarter = if_else(quarter == 4, 1, quarter + 1) # can lag more by repeating this process
+  )
+
+feols(production_carcass ~ w_avg | state_code_name + year, data = regression_data_lag4) # became positive again after a full year!
+# probably sign we shouldn't be working with lags
+
+# maybe use a lasso technique to find a best equation
+set.seed(04222025)
+x = data.matrix(regression_data[, c("state_code_name", "w_avg", "year", "city_lean", "price_lean", "month", "quarter", "inspection_type" "price_lean")])
+y = regression_data$production_carcass
+
+cv_model = cv.glmnet(x, y, alpha = 1) # find best lambda
+lambda = cv_model$lambda.min
+
+best_model <- glmnet(x, y, alpha = 1, lambda = lambda) # use new lambda
+coef(best_model) # can ask about this with the others
 
 
 
-# then do lasso and the specification it gives (make sure to do cross-validation for different tuning parameters)
-
-# make sure to post all this stuff on slack
 
 
 
